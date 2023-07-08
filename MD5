@@ -1,5 +1,5 @@
-2392831abb5c898424b6cc291c8d1e52 *CHANGELOG
-86ac407e140455420149771290941d10 *DESCRIPTION
+4610b10f9d1430f166c360c3d90171fc *CHANGELOG
+eb1008e68f9ee0c50bc10c332ef9d6e2 *DESCRIPTION
 2ccd649d6594c2333b8a2ae7b681e695 *NAMESPACE
 a463952f44f12de52cf5782d529935a1 *R/RcppExports.R
 385175b8ace584ba71a78c5cf5ddfe62 *R/code.R
@@ -20,4 +20,4 @@ e508010baeaa168e146acc45ff868cbb *man/predict.fast_logistic_regression.Rd
 c27ac6c43427bfecc2e9b6ae4aefcdcc *man/summary.fast_logistic_regression.Rd
 7266fb93ee2351731e1383dca341d7ec *man/summary.fast_logistic_regression_stepwise.Rd
 a33a52f910bf0e06f847951f29985ab5 *src/RcppExports.cpp
-8426f6a9b11772a99a226e9d039937ab *src/routines.cpp
+2c8adce0c61a6f7eb23d4b4d3e25eca4 *src/routines.cpp
