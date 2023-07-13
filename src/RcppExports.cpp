@@ -48,11 +48,25 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// eigen_compute_single_entry_of_diagonal_matrix_cpp
+double eigen_compute_single_entry_of_diagonal_matrix_cpp(const Eigen::Map<Eigen::MatrixXd> M, int j, int n_cores);
+RcppExport SEXP _fastLogisticRegressionWrap_eigen_compute_single_entry_of_diagonal_matrix_cpp(SEXP MSEXP, SEXP jSEXP, SEXP n_coresSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd> >::type M(MSEXP);
+    Rcpp::traits::input_parameter< int >::type j(jSEXP);
+    Rcpp::traits::input_parameter< int >::type n_cores(n_coresSEXP);
+    rcpp_result_gen = Rcpp::wrap(eigen_compute_single_entry_of_diagonal_matrix_cpp(M, j, n_cores));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_fastLogisticRegressionWrap_eigen_Xt_times_diag_w_times_X_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_eigen_Xt_times_diag_w_times_X_cpp, 3},
     {"_fastLogisticRegressionWrap_eigen_inv_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_eigen_inv_cpp, 2},
     {"_fastLogisticRegressionWrap_eigen_det_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_eigen_det_cpp, 2},
+    {"_fastLogisticRegressionWrap_eigen_compute_single_entry_of_diagonal_matrix_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_eigen_compute_single_entry_of_diagonal_matrix_cpp, 3},
     {NULL, NULL, 0}
 };
 

@@ -23,12 +23,21 @@ assert_numeric_matrix = function(Xmm){
 #' 										We use the default value from \code{base::lm.fit}'s which is 1e-7. If you fit the logistic regression and
 #' 										still get p-values near 1 indicating high collinearity, we recommend making this value smaller.
 #' @param do_inference_on_var			Which variables should we compute approximate standard errors of the coefficients and approximate p-values for the test of
-#' 										no linear log-odds probability effect? Default is \code{FALSE} for inference on none (for speed). If not default, then \code{TRUE}
-#' 										to indicate inference should be computed for all variables. If a logical vector of size \code{ncol(Xmm)} is passed in then
-#' 										the indicies of the \code{TRUE} denotes which variables to compute inference for. If variables are dropped when
-#' 										\code{drop_collinear_variables = TRUE}, then indicies will likewise be dropped from this vector. We do not recommend using this type
-#' 										of piecewise specification until we understand how it behaves in simulation. Note: if you are just comparing
+#' 										no linear log-odds probability effect? Default is \code{"none"} for inference on none (for speed). If not default, then \code{"all"}
+#' 										to indicate inference should be computed for all variables. The final option is to pass one index to indicate the column
+#' 										number of \code{Xmm} where inference is desired. We have a special routine to compute inference for one variable only. It consists of a conjugate
+#' 										gradient descent which is another approximation atop the coefficient-fitting approximation in RcppNumerical. Note: if you are just comparing
 #' 										nested models using anova, there is no need to compute inference for coefficients (keep the default of \code{FALSE} for speed).
+#' @param Xt_times_diag_w_times_X_fun	A custom function whose arguments are \code{X} (an n x m matrix), \code{w} (a vector of length m) and this function's \code{num_cores} 
+#' 										argument in that order. The function must return an m x m R matrix class object which is the result of the computing X^T %*% diag(w) %*% X. If your custom  
+#' 										function is not parallelized, the \code{num_cores} argument is ignored. Default is \code{NULL} which uses the function 
+#' 										\code{\link{eigen_Xt_times_diag_w_times_X}} which is implemented with the Eigen C++ package and hence very fast. The only way we know of to beat the default is to use a method that employs
+#' 										GPUs. See README on github for more information.
+#' @param sqrt_diag_matrix_inverse_fun	A custom function that returns a numeric vector which is square root of the diagonal of the inverse of the inputted matrix. Its arguments are \code{X} 
+#' 										(an n x n matrix) and this function's \code{num_cores} argument in that order. If your custom function is not parallelized, the \code{num_cores} argument is ignored. 
+#' 										The object returned must further have a defined function \code{diag} which returns the diagonal of the matrix as a vector. Default is \code{NULL} which uses the function 
+#' 										\code{\link{eigen_inv}} which is implemented with the Eigen C++ package and hence very fast. The only way we know of to beat the default is to use a method that employs
+#' 										GPUs. See README on github for more information.
 #' @param num_cores						Number of cores to use to speed up matrix multiplication and matrix inversion (used only during inference computation). Default is 1.
 #' 										Unless the number of variables, i.e. \code{ncol(Xmm)}, is large, there does not seem to be a performance gain in using multiple cores.
 #' @param ...   						Other arguments to be passed to \code{fastLR}. See documentation there.
@@ -41,23 +50,28 @@ assert_numeric_matrix = function(Xmm){
 #' 	 Xmm = model.matrix(~ . - type, Pima.te), 
 #'   ybin = as.numeric(Pima.te$type == "Yes")
 #' )
-fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE, lm_fit_tol = 1e-7, do_inference_on_var = FALSE, num_cores = 1, ...){
+fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE, lm_fit_tol = 1e-7, do_inference_on_var = "none", Xt_times_diag_w_times_X_fun = NULL, sqrt_diag_matrix_inverse_fun = NULL, num_cores = 1, ...){
   assert_numeric_matrix(Xmm)
   ybin = assert_binary_vector_then_cast_to_numeric(ybin)
   assert_logical(drop_collinear_variables)
   assert_numeric(lm_fit_tol, lower = 0)
-  assert_logical(do_inference_on_var)
+  assert_function(Xt_times_diag_w_times_X_fun, null.ok = TRUE, args = c("X", "w", "num_cores"), ordered = TRUE, nargs = 3)
+  assert_function(sqrt_diag_matrix_inverse_fun, null.ok = TRUE, args = c("X", "num_cores"), ordered = TRUE, nargs = 2)
   assert_count(num_cores, positive = TRUE)
   original_col_names = colnames(Xmm)
   
   p = ncol(Xmm) #the original p before variables are dropped
-  if (length(do_inference_on_var) > 1){
-	  assert_true(length(do_inference_on_var) == p) 
+  
+  assert_choice(class(do_inference_on_var), c("character", "numeric", "integer"))
+  if (is(do_inference_on_var, "character")){
+	  assert_choice(do_inference_on_var, c("none", "all"))
+	  do_inference_on_var_name = NULL
   } else {
-	  do_inference_on_var = rep(do_inference_on_var, p)
+	  assert_count(do_inference_on_var, positive = TRUE)
+	  assert_numeric(do_inference_on_var, upper = p)
+	  do_inference_on_var_name = original_col_names[do_inference_on_var]
   }
-  names(do_inference_on_var) = original_col_names
-  any_inference_originally = any(do_inference_on_var)
+  do_any_inference = do_inference_on_var != "none"
   
   if (length(ybin) != nrow(Xmm)){
     stop("The number of rows in Xmm must be equal to the length of ybin")
@@ -88,9 +102,9 @@ fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE,
 	  #b = coef(lm.fit(Xmm, ybin, tol = lm_fit_tol))
 	  #print(b)
 	  #solve(t(Xmm) %*% Xmm, tol = inversion_tol)
-	  do_inference_on_var = do_inference_on_var[!(names(do_inference_on_var) %in% collinear_variables)]
-	  if (!any(do_inference_on_var) & any_inference_originally){
-		  warning("There is no longer any inference to compute as all variables specified were collinear and thus dropped from the model fit.")
+	  if (do_any_inference & !is.null(do_inference_on_var_name) & do_inference_on_var_name %in% collinear_variables){
+		  warning("There is no longer any inference to compute as the variables specified was collinear and thus dropped from the model fit.")
+		  do_any_inference = FALSE
 	  }
 	  variables_retained[collinear_variables] = FALSE
   }
@@ -98,6 +112,7 @@ fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE,
   flr = RcppNumerical::fastLR(Xmm, ybin, ...)
   flr$Xmm = Xmm
   flr$ybin = ybin
+  flr$do_inference_on_var = do_inference_on_var
   flr$variables_retained = variables_retained
   if (drop_collinear_variables){
 	flr$collinear_variables = collinear_variables
@@ -110,9 +125,9 @@ fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE,
   flr$rank = ncol(Xmm)
   flr$deviance = -2 * flr$loglikelihood 
   flr$aic = flr$deviance + 2 * flr$rank
-  flr$do_inference_on_var = do_inference_on_var #pass back to the user which variables, if could even be none at this point after collinear variables were dropped
+  
 
-  if (any(do_inference_on_var)){
+  if (do_any_inference){
 	  b = flr$coefficients[variables_retained]  
 	  
 	  flr$se = 						array(NA, p)
@@ -126,23 +141,29 @@ fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE,
 	  #we compute them via notes found in https://web.stanford.edu/class/archive/stats/stats200/stats200.1172/Lecture26.pdf
 	  exp_Xmm_dot_b = exp(Xmm %*% b)
 	  w = as.numeric(exp_Xmm_dot_b / (1 + exp_Xmm_dot_b)^2)
-	  XmmtWmatXmm = eigen_Xt_times_diag_w_times_X(Xmm, w, num_cores) #t(Xmm) %*% diag(w) %*% Xmm
+	  XmmtWmatXmm =   if (is.null(Xt_times_diag_w_times_X_fun)){
+						  eigen_Xt_times_diag_w_times_X(Xmm, w, num_cores) #t(Xmm) %*% diag(w) %*% Xmm
+					  } else {
+						  Xt_times_diag_w_times_X_fun(Xmm, w, num_cores) #t(Xmm) %*% diag(w) %*% Xmm
+					  }
 	  
-	  if (sum(do_inference_on_var) > 2){ #this seems to be the cutoff in simulations...
+	  
+	  if (do_inference_on_var == "all"){
 		  tryCatch({ #compute the entire inverse (this could probably be sped up by only computing the diagonal a la https://web.stanford.edu/~lexing/diagonal.pdf but I have not found that implemented anywhere)
-			  XmmtWmatXmminv = eigen_inv(XmmtWmatXmm, num_cores)
+			  sqrt_diag_XmmtWmatXmminv =  if (is.null(sqrt_diag_matrix_inverse_fun)){
+											sqrt(diag(eigen_inv(XmmtWmatXmm, num_cores)))
+										  } else {
+										  	sqrt_diag_matrix_inverse_fun(XmmtWmatXmm, num_cores)
+										  }
 		  }, 
 		  error = function(e){
 			  print(e)
 			  stop("Error in inverting X^T X.\nTry setting drop_collinear_variables = TRUE\nto automatically drop perfectly collinear variables.\n")
 		  })
 		  
-		  flr$se[variables_retained] = sqrt(diag(XmmtWmatXmminv))
-	  } else { #only compute the few entries of the inverse that are necessary. This could be sped up using https://math.stackexchange.com/questions/64420/is-there-a-faster-way-to-calculate-a-few-diagonal-elements-of-the-inverse-of-a-h
-		  sqrt_det_XmmtWmatXmm = sqrt(eigen_det(XmmtWmatXmm, num_cores))
-		  for (j in which(variables_retained)){
-			  flr$se[j] = sqrt(eigen_det(XmmtWmatXmm[-j, -j, drop = FALSE], num_cores)) / sqrt_det_XmmtWmatXmm
-		  }
+		  flr$se[variables_retained] = sqrt_diag_XmmtWmatXmminv
+	  } else { #only compute the one entry of the inverse that is of interest. Right now this is too slow to be useful but eventually it will be implemente via:
+		flr$se[do_inference_on_var] = sqrt(eigen_compute_single_entry_of_diagonal_matrix(XmmtWmatXmm, do_inference_on_var, num_cores))
 	  }
 
 	  flr$z[variables_retained] = 				b / flr$se[variables_retained]
@@ -174,8 +195,8 @@ summary.fast_logistic_regression = function(object, ...){
   if (!object$converged){
       warning("fast LR did not converge")
   }
-  if (!any(object$do_inference_on_var)){
-	  cat("please refit the model with the \"do_inference_on_var\" argument set to true.\n")
+  if (object$do_inference_on_var == "none"){
+	  cat("please refit the model with the \"do_inference_on_var\" argument set to \"all\" or a single variable index number.\n")
   } else {
 	  df = data.frame(
 	    approx_coef = object$coefficients,
@@ -423,9 +444,9 @@ fast_logistic_regression_stepwise_forward = function(
       # tryCatch({
 		ptemp = ncol(Xmmtemp)
 		do_inference_on_var = 	if (mode_is_aic){
-									FALSE
+									"none"
 								} else {
-									c(rep(FALSE, ptemp - 1), TRUE)
+									ptemp - 1
 								}
         flrtemp = fast_logistic_regression(Xmmtemp, ybin, drop_collinear_variables, lm_fit_tol, do_inference_on_var = do_inference_on_var)
 		if (mode_is_aic){
@@ -489,7 +510,7 @@ fast_logistic_regression_stepwise_forward = function(
     }
   }
   #return some information you would like to see
-  flr_stepwise = list(js = js, flr = fast_logistic_regression(Xmmt, ybin, drop_collinear_variables, lm_fit_tol, do_inference_on_var = TRUE))
+  flr_stepwise = list(js = js, flr = fast_logistic_regression(Xmmt, ybin, drop_collinear_variables, lm_fit_tol, do_inference_on_var = "all"))
   if (mode_is_aic){
 	  flr_stepwise$aics = aics
   } else {
@@ -680,17 +701,38 @@ eigen_Xt_times_diag_w_times_X = function(X, w, num_cores = 1){
 	assert_numeric(w)
 	assert_true(nrow(X) == length(w))
 	assert_count(num_cores, positive = TRUE)
-#	if (!exists("eigen_Xt_times_diag_w_times_X_cpp", envir = fastLogisticRegressionWrap_globals)){
-#		eigen_Xt_times_diag_w_times_X_cpp = Rcpp::cppFunction(depends = "RcppEigen", '					
-#		Eigen::MatrixXd eigen_Xt_times_diag_w_times_X_cpp(const Eigen::Map<Eigen::MatrixXd> X, const Eigen::Map<Eigen::VectorXd> w, int n_cores) {
-#			Eigen::setNbThreads(n_cores);
-#			return X.transpose() * w.asDiagonal() * X;
-#		}
-#		')
-#		assign("eigen_Xt_times_diag_w_times_X_cpp", eigen_Xt_times_diag_w_times_X_cpp, fastLogisticRegressionWrap_globals)
-#	}
-#	eigen_Xt_times_diag_w_times_X_cpp = get("eigen_Xt_times_diag_w_times_X_cpp", fastLogisticRegressionWrap_globals)
+	
 	eigen_Xt_times_diag_w_times_X_cpp(X, w, num_cores)
+}
+
+#' Compute Single Value of the Diagonal of a Symmetric Matrix's Inverse
+#' 
+#' Via the eigen package's conjugate gradient descent algorithm.
+#' 
+#' @param M 			The symmetric matrix which to invert (and then extract one element of its diagonal)
+#' @param j 			The diagonal entry of \code{M}'s inverse
+#' @param num_cores 	The number of cores to use. Default is 1.
+#' 
+#' @return 				The value of m^{-1}_{j,j}
+#' 
+#' @author Adam Kapelner
+#' @export
+#' @examples
+#' 	n = 500
+#' 	X = matrix(rnorm(n^2), nrow = n, ncol = n)
+#' 	M = t(X) %*% X
+#' 	j = 137
+#' 	eigen_compute_single_entry_of_diagonal_matrix(M, j)
+#' 	solve(M)[j, j] #to ensure it's the same value
+
+eigen_compute_single_entry_of_diagonal_matrix = function(M, j, num_cores = 1){
+	assert_numeric_matrix(M)
+	assert_true(ncol(M) == nrow(M))
+	assert_count(j, positive = TRUE)
+	assert_numeric(j, upper = nrow(M))
+	assert_count(num_cores, positive = TRUE)
+	
+	eigen_compute_single_entry_of_diagonal_matrix_cpp(M, j, num_cores)
 }
 
 #' A fast solve(X) function
@@ -711,16 +753,7 @@ eigen_inv = function(X, num_cores = 1){
 	assert_numeric_matrix(X)
 	assert_true(ncol(X) == nrow(X))
 	assert_count(num_cores, positive = TRUE)
-#	if (!exists("eigen_inv_cpp", envir = fastLogisticRegressionWrap_globals)){
-#		eigen_inv_cpp = Rcpp::cppFunction(depends = "RcppEigen", '
-#			Eigen::MatrixXd eigen_inv_cpp(const Eigen::Map<Eigen::MatrixXd> X, int n_cores) {
-#			Eigen::setNbThreads(n_cores);
-#			return X.inverse();
-#		}
-#		')
-#		assign("eigen_inv_cpp", eigen_inv_cpp, fastLogisticRegressionWrap_globals)
-#	}
-#	eigen_inv_cpp = get("eigen_inv_cpp", fastLogisticRegressionWrap_globals)
+	
 	eigen_inv_cpp(X, num_cores)
 }
 
@@ -742,15 +775,6 @@ eigen_det = function(X, num_cores = 1){
 	assert_numeric_matrix(X)
 	assert_true(ncol(X) == nrow(X))
 	assert_count(num_cores, positive = TRUE)
-#	if (!exists("eigen_det_cpp", envir = fastLogisticRegressionWrap_globals)){
-#		eigen_det_cpp = Rcpp::cppFunction(depends = "RcppEigen", '					
-#		double eigen_det_cpp(const Eigen::Map<Eigen::MatrixXd> X, int n_cores) {
-#			Eigen::setNbThreads(n_cores);
-#			return X.determinant();
-#		}
-#		')
-#		assign("eigen_det_cpp", eigen_det_cpp, fastLogisticRegressionWrap_globals)
-#	}
-#	eigen_det_cpp = get("eigen_det_cpp", fastLogisticRegressionWrap_globals)
+	
 	eigen_det_cpp(X, num_cores)
 }

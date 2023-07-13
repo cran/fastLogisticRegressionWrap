@@ -13,3 +13,7 @@ eigen_det_cpp <- function(X, n_cores) {
     .Call(`_fastLogisticRegressionWrap_eigen_det_cpp`, X, n_cores)
 }
 
+eigen_compute_single_entry_of_diagonal_matrix_cpp <- function(M, j, n_cores) {
+    .Call(`_fastLogisticRegressionWrap_eigen_compute_single_entry_of_diagonal_matrix_cpp`, M, j, n_cores)
+}
+
