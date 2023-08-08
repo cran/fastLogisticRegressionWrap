@@ -102,9 +102,11 @@ fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE,
 	  #b = coef(lm.fit(Xmm, ybin, tol = lm_fit_tol))
 	  #print(b)
 	  #solve(t(Xmm) %*% Xmm, tol = inversion_tol)
-	  if (do_any_inference & !is.null(do_inference_on_var_name) & do_inference_on_var_name %in% collinear_variables){
-		  warning("There is no longer any inference to compute as the variables specified was collinear and thus dropped from the model fit.")
-		  do_any_inference = FALSE
+	  if (do_any_inference & !is.null(do_inference_on_var_name)){
+		  if (do_inference_on_var_name %in% collinear_variables){
+			  warning("There is no longer any inference to compute as the variables specified was collinear and thus dropped from the model fit.")
+			  do_any_inference = FALSE			  
+		  }
 	  }
 	  variables_retained[collinear_variables] = FALSE
   }
@@ -179,10 +181,11 @@ fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE,
 #' 
 #' Returns the summary table a la glm
 #'
-#' @param object     The object built using the \code{fast_logistic_regression} or \code{fast_logistic_regression_stepwise} wrapper functions
-#' @param ...        Other arguments to be passed to \code{summary}.
+#' @param object       The object built using the \code{fast_logistic_regression} or \code{fast_logistic_regression_stepwise} wrapper functions
+#' @param alpha_order  Should the coefficients be ordered in alphabetical order? Default is \code{TRUE}.
+#' @param ...          Other arguments to be passed to \code{summary}.
 #'
-#' @return           The summary as a data.frame
+#' @return             The summary as a data.frame
 #' @export
 #' @examples
 #' library(MASS); data(Pima.te)
@@ -190,8 +193,9 @@ fast_logistic_regression = function(Xmm, ybin, drop_collinear_variables = FALSE,
 #' 	Xmm = model.matrix(~ . - type, Pima.te), 
 #'  ybin = as.numeric(Pima.te$type == "Yes"))
 #' summary(flr)
-summary.fast_logistic_regression = function(object, ...){
+summary.fast_logistic_regression = function(object, alpha_order = TRUE, ...){
   checkmate::assert_choice(class(object), c("fast_logistic_regression", "fast_logistic_regression_stepwise"))
+  checkmate::assert_logical(alpha_order)
   if (!object$converged){
       warning("fast LR did not converge")
   }
@@ -206,6 +210,9 @@ summary.fast_logistic_regression = function(object, ...){
 	    signif = ifelse(is.na(object$approx_pval), "", ifelse(object$approx_pval < 0.001, "***", ifelse(object$approx_pval < 0.01, "**", ifelse(object$approx_pval < 0.05, "*", ""))))
 	  )
 	  rownames(df) = object$original_regressor_names
+	  if (alpha_order){
+		  df = df[order(rownames(df)), ]
+	  }
 	  df
   }
 }
@@ -446,7 +453,7 @@ fast_logistic_regression_stepwise_forward = function(
 		do_inference_on_var = 	if (mode_is_aic){
 									"none"
 								} else {
-									ptemp - 1
+									"all" #I don't think single variable is ready for primetime yet
 								}
         flrtemp = fast_logistic_regression(Xmmtemp, ybin, drop_collinear_variables, lm_fit_tol, do_inference_on_var = do_inference_on_var)
 		if (mode_is_aic){
@@ -524,10 +531,11 @@ fast_logistic_regression_stepwise_forward = function(
 #' 
 #' Provides a binary confusion table and error metrics
 #'
-#' @param yhat            The binary predictions
-#' @param ybin            The true binary responses
+#' @param yhat            		The binary predictions
+#' @param ybin            		The true binary responses
+#' @param skip_argument_checks	If \code{TRUE} it does not check this function's arguments for appropriateness. It is not recommended unless you truly need speed and thus the default is \code{FALSE}.
 #'
-#' @return                A list of raw results
+#' @return                		A list of raw results
 #' @export
 #' @examples
 #' library(MASS); data(Pima.te)
@@ -538,14 +546,18 @@ fast_logistic_regression_stepwise_forward = function(
 #' )
 #' phat = predict(flr, model.matrix(~ . - type, Pima.te))
 #' confusion_results(phat > 0.5, ybin)
-confusion_results = function(yhat, ybin){
-  yhat = assert_binary_vector_then_cast_to_numeric(yhat)
-  ybin = assert_binary_vector_then_cast_to_numeric(ybin)
+confusion_results = function(yhat, ybin, skip_argument_checks = FALSE){  
   n = length(yhat)
-  if (n != length(ybin)){
-    stop("yhat and ybin must be same length")
+  if (!skip_argument_checks){
+	  assert_logical(skip_argument_checks)
+	  yhat = assert_binary_vector_then_cast_to_numeric(yhat)
+	  ybin = assert_binary_vector_then_cast_to_numeric(ybin)
+	  if (n != length(ybin)){
+		  stop("yhat and ybin must be same length")
+	  }	  
   }
-  conf = table(ybin, yhat)
+
+  conf = fast_two_by_two_binary_table_cpp(ybin, yhat)
   tp = conf[2, 2]
   tn = conf[1, 1]
   fp = conf[1, 2]
@@ -580,6 +592,88 @@ confusion_results = function(yhat, ybin){
     confusion_sums = confusion_sums,
     confusion_proportion_and_errors = confusion_proportion_and_errors
   )
+}
+
+#' Asymmetric Cost Explorer
+#' 
+#' Given a set of desired proportions of predicted outcomes, what is the error rate for each of those models?
+#' 
+#' @param phat                  The vector of probability estimates to be thresholded to make a binary decision
+#' @param ybin            		The true binary responses
+#' @param steps					All possibile thresholds which must be a vector of numbers in (0, 1). Default is \code{seq(from = 0.001, to = 0.999, by = 0.001)}.
+#' @param outcome_of_analysis   Which class do you care about performance? Either 0 or 1 for the negative class or positive class. Default is \code{0}.
+#' @param proportions_desired 	Which proportions of \code{outcome_of_analysis} class do you wish to understand performance for? 
+#' @param proportion_tolerance  If the model cannot match the proportion_desired within this amount, it does not return that model's performance. Default is \code{0.01}.
+#' @return 						A table with column 1: \code{proportions_desired}, column 2: actual proportions (as close as possible), column 3: error rate, column 4: probability threshold.
+#' 
+#' @author Adam Kapelner
+#' @export
+asymmetric_cost_explorer = function(
+	phat, 
+	ybin,
+	steps = seq(from = 0.001, to = 0.999, by = 0.001), 
+	outcome_of_analysis = 0, 
+	proportions_desired = seq(from = 0.1, to = 0.9, by = 0.1),
+	proportion_tolerance = 0.01
+){
+	checkmate::assert_vector(phat)
+	checkmate::assert_numeric(phat)
+	ybin = assert_binary_vector_then_cast_to_numeric(ybin)
+	checkmate::assert_numeric(steps, lower = .Machine$double.eps, upper = 1 - .Machine$double.eps)
+	checkmate::assert_choice(outcome_of_analysis, c(0, 1))
+	checkmate::assert_numeric(proportions_desired, lower = .Machine$double.eps, upper = 1 - .Machine$double.eps)
+	checkmate::assert_numeric(proportion_tolerance, lower = .Machine$double.eps, upper = 1 - .Machine$double.eps)
+	num_steps = length(steps)
+	temp_res = matrix(NA, nrow = num_steps, ncol = 4)
+	half_num_steps = round(num_steps / 2)
+	
+	reached_error = FALSE
+	for (i in (half_num_steps : 1)){
+		phat_threshold = steps[i]
+		temp_res[i, 1] = phat_threshold 
+#		if (!reached_error){			
+			tryCatch({
+				conf_tab = confusion_results(phat > phat_threshold, ybin, skip_argument_checks = TRUE)$confusion_proportion_and_errors
+				temp_res[i, 2] = conf_tab[3, outcome_of_analysis + 1]
+				temp_res[i, 3] = conf_tab[4, outcome_of_analysis + 1]	
+				temp_res[i, 4] = conf_tab[4, 4]				
+			}, error = function(e){
+				reached_error = TRUE
+			})
+#		}
+	}
+	
+	reached_error = FALSE
+	for (i in ((half_num_steps + 1) : num_steps)){
+		phat_threshold = steps[i]
+		temp_res[i, 1] = phat_threshold 
+#		if (!reached_error){			
+			tryCatch({
+				conf_tab = confusion_results(ybin, phat > phat_threshold, skip_argument_checks = TRUE)$confusion_proportion_and_errors
+				temp_res[i, 2] = conf_tab[3, outcome_of_analysis + 1]
+				temp_res[i, 3] = conf_tab[4, outcome_of_analysis + 1]	
+				temp_res[i, 4] = conf_tab[4, 4]
+			}, error = function(e){
+				reached_error = TRUE
+			})
+#		}
+	}	
+	
+	res = data.frame(
+		proportions_desired = proportions_desired,
+		actual_proportion = NA,
+		fomr = NA,
+		miscl_err = NA,
+		phat_threshold = NA
+	)
+	for (k in 1 : length(proportions_desired)){
+		abs_diffs = abs(proportions_desired[k] - temp_res[, 2])
+		idx = which.min(abs_diffs)
+		if (abs_diffs[idx] < proportion_tolerance){
+			res[k, 2 : 5] = temp_res[idx, c(2, 3, 4, 1)]
+		}
+	}
+	res
 }
 
 #' General Confusion Table and Errors
@@ -635,6 +729,7 @@ general_confusion_results = function(yhat, yfac, proportions_scaled_by_column = 
 	
 	confusion_proportion_and_errors = matrix(NA, n_r_conf + 2, n_c_conf + 2)
 	if (proportions_scaled_by_column){
+		p = ncol(conf)
 		for (j in 1 : p){
 			confusion_proportion_and_errors[1 : n_r_conf, j] = conf[, j] / sum(conf[, j])		
 		}

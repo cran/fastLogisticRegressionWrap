@@ -17,3 +17,7 @@ eigen_compute_single_entry_of_diagonal_matrix_cpp <- function(M, j, n_cores) {
     .Call(`_fastLogisticRegressionWrap_eigen_compute_single_entry_of_diagonal_matrix_cpp`, M, j, n_cores)
 }
 
+fast_two_by_two_binary_table_cpp <- function(ybin, yhat) {
+    .Call(`_fastLogisticRegressionWrap_fast_two_by_two_binary_table_cpp`, ybin, yhat)
+}
+

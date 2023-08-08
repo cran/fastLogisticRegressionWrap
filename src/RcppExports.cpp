@@ -61,12 +61,25 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// fast_two_by_two_binary_table_cpp
+IntegerMatrix fast_two_by_two_binary_table_cpp(const NumericVector ybin, const NumericVector yhat);
+RcppExport SEXP _fastLogisticRegressionWrap_fast_two_by_two_binary_table_cpp(SEXP ybinSEXP, SEXP yhatSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const NumericVector >::type ybin(ybinSEXP);
+    Rcpp::traits::input_parameter< const NumericVector >::type yhat(yhatSEXP);
+    rcpp_result_gen = Rcpp::wrap(fast_two_by_two_binary_table_cpp(ybin, yhat));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_fastLogisticRegressionWrap_eigen_Xt_times_diag_w_times_X_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_eigen_Xt_times_diag_w_times_X_cpp, 3},
     {"_fastLogisticRegressionWrap_eigen_inv_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_eigen_inv_cpp, 2},
     {"_fastLogisticRegressionWrap_eigen_det_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_eigen_det_cpp, 2},
     {"_fastLogisticRegressionWrap_eigen_compute_single_entry_of_diagonal_matrix_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_eigen_compute_single_entry_of_diagonal_matrix_cpp, 3},
+    {"_fastLogisticRegressionWrap_fast_two_by_two_binary_table_cpp", (DL_FUNC) &_fastLogisticRegressionWrap_fast_two_by_two_binary_table_cpp, 2},
     {NULL, NULL, 0}
 };
 
